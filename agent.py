@@ -35,12 +35,12 @@ class TradeSignal(Model):
 # =========================================================
 agent = Agent(
     name="icm_ai_trader",
-    seed="want human trial stomach room begin fever minimum east shoulder trumpet electric",
+    seed="want human trial stomach room begin fever minimom easter shoulder trumpet electric",
     port=8000,
     mailbox=True,
     publish_agent_details=True,
     # Hardcoded insecure key for ASI:One (replace later)
-    api_key="sk_69b779d0e215476a880045ea71cf12cd9e0d7c56c204448dbbbdd3605cab0f9c",
+    api_key="..................",
 )
 
 # Create Chat Protocol
