@@ -1,33 +1,40 @@
-# icm_ai_trader_agent.py
 # =========================================================
-# ICM Trading Agent – ASI:One Compatible (Chat + Trading)
+#  ICM AI Trader Agent – ASI:One Compatible
 # =========================================================
-
-from uagents import Agent, Context, Model, Protocol
+from datetime import datetime
+from uuid import uuid4
+from uagents import Agent, Context, Protocol, Model
 from uagents_core.contrib.protocols.chat import (
-    ChatMessage,
     ChatAcknowledgement,
+    ChatMessage,
+    EndSessionContent,
+    StartSessionContent,
     TextContent,
     chat_protocol_spec,
 )
-import statistics
-import time
-import uuid
+import statistics, re, os, uuid
 
 # =========================================================
 #  Models
 # =========================================================
-class PriceRequest(Model):
-    token: str
-    current_price: float
-    entry_price: float
-    historical_prices: list
-    current_holdings: float
+class MarketNewsRequest(Model):
+    request_id: str
 
 
-class TradeSignal(Model):
-    signal: str
-    percent: float
+class MarketNewsResponse(Model):
+    sentiment: str
+    impact_score: float
+    summary: str
+
+
+# =========================================================
+#  Helper Function for Chat Messages
+# =========================================================
+def create_text_chat(text: str, end_session: bool = False) -> ChatMessage:
+    content = [TextContent(type="text", text=text)]
+    if end_session:
+        content.append(EndSessionContent(type="end-session"))
+    return ChatMessage(timestamp=datetime.utcnow(), msg_id=uuid4(), content=content)
 
 
 # =========================================================
@@ -35,106 +42,86 @@ class TradeSignal(Model):
 # =========================================================
 agent = Agent(
     name="icm_ai_trader",
-    seed="want human trial stomach room begin fever minimom easter shoulder trumpet electric",
+    seed="want human trial stomach room begin fever minimum east shoulder trumpet electric",
     port=8000,
     mailbox=True,
     publish_agent_details=True,
-    # Hardcoded insecure key for ASI:One (replace later)
-    api_key="..................",
+    api_key=os.getenv("ASI_API_KEY"),
 )
 
-# Create Chat Protocol
 chat_protocol = Protocol(spec=chat_protocol_spec)
 
-
 # =========================================================
-#  Core Trading Logic
+#  Core Logic (Solana Portfolio Analyzer)
 # =========================================================
-@agent.on_message(model=PriceRequest, replies=TradeSignal)
-async def decide(ctx: Context, sender: str, msg: PriceRequest):
-    prices = msg.historical_prices
-    current = msg.current_price
-    entry = msg.entry_price
-    holdings = msg.current_holdings
+def analyze_portfolio(text: str) -> str:
+    # Example extraction
+    text_lower = text.lower()
+    token = re.search(r"(sol|eth|btc|usdc|ada|dot|avax)", text_lower)
+    token = token.group(1).upper() if token else "SOL"
 
-    if not prices or len(prices) < 2:
-        await ctx.send(sender, TradeSignal(signal="HOLD", percent=0))
-        return
+    price = re.search(r"\$?(\d+(\.\d+)?)", text_lower)
+    current_price = float(price.group(1)) if price else 200.0
 
-    mean_price = statistics.mean(prices)
-    std_price = statistics.pstdev(prices) if len(prices) > 1 else 0.0
-    pnl = ((current - entry) / entry) * 100
+    entry = re.search(r"entry\s*\$?(\d+(\.\d+)?)", text_lower)
+    entry_price = float(entry.group(1)) if entry else 180.0
 
-    if pnl <= -10 and holdings < 50:
-        decision = "DCA"
-        percent = min(10, 50 - holdings)
-    elif pnl >= 10 and holdings > 10:
-        decision = "SELL"
-        percent = min(25, holdings - 10)
-    elif current < mean_price - 0.5 * std_price and holdings < 50:
-        decision = "BUY"
-        percent = min(50 - holdings, ((mean_price - current) / mean_price) * 100)
-    elif current > mean_price + 0.5 * std_price and holdings > 10:
-        decision = "SELL"
-        percent = min(holdings - 10, ((current - mean_price) / mean_price) * 100)
-    else:
-        decision = "HOLD"
-        percent = 0
-
-    ctx.logger.info(
-        f"📊 {msg.token}: {decision} {percent:.1f}% | pnl={pnl:.1f}% | holdings={holdings}%"
+    pnl = ((current_price - entry_price) / entry_price) * 100
+    advice = (
+        f"📊 {token} is currently ${current_price:.2f}, entry at ${entry_price:.2f}. "
+        f"PnL: {pnl:.2f}%. "
     )
 
-    await ctx.send(sender, TradeSignal(signal=decision, percent=round(percent, 2)))
+    if pnl < -10:
+        advice += "It’s dipping — consider DCAing gradually."
+    elif pnl > 10:
+        advice += "You’re in profit — think about partial take-profit."
+    else:
+        advice += "Hold steady, market is sideways."
+
+    return advice
 
 
 # =========================================================
-#  Chat Protocol Logic
+#  Chat Protocol Handlers
 # =========================================================
 @chat_protocol.on_message(ChatMessage)
 async def handle_chat(ctx: Context, sender: str, msg: ChatMessage):
-    # Acknowledge receipt
     await ctx.send(
         sender,
-        ChatAcknowledgement(
-            timestamp=int(time.time()),
-            acknowledged_msg_id=msg.msg_id,
-        ),
+        ChatAcknowledgement(timestamp=datetime.utcnow(), acknowledged_msg_id=msg.msg_id),
     )
 
-    # Extract full chat text
-    user_message = ""
-    for content in msg.content:
-        if isinstance(content, TextContent):
-            user_message += content.text
+    if any(isinstance(c, StartSessionContent) for c in msg.content):
+        await ctx.send(sender, create_text_chat("Hi! I can analyze your Solana or crypto portfolio.", end_session=False))
+        return
 
-    ctx.logger.info(f"💬 Chat message received: {user_message}")
+    # FIXED text extraction
+    text = " ".join(
+        c.text.strip() for c in msg.content if isinstance(c, TextContent) and hasattr(c, "text")
+    ).strip()
 
-    # Simple logic to respond conversationally
-    user_message_lower = user_message.lower()
-    if "buy" in user_message_lower:
-        reply_text = "I'd recommend checking the trend first. If momentum is strong, buy gradually (DCA)."
-    elif "sell" in user_message_lower:
-        reply_text = "If your PnL is above 10%, consider partial profit-taking."
-    elif "hold" in user_message_lower:
-        reply_text = "Holding might be best if volatility is high but fundamentals are unchanged."
-    elif "signal" in user_message_lower or "what should i do" in user_message_lower:
-        reply_text = "I can analyze portfolio data and market gossip to suggest BUY, HOLD, or SELL."
-    else:
-        reply_text = "Hello! I’m the ICM AI Trading Agent — I provide trade signals and insights using market gossip and portfolio data."
+    if not text:
+        return
 
-    # Send chat response
-    reply = ChatMessage(
-        msg_id=str(uuid.uuid4()),
-        content=[TextContent(text=reply_text)],
-    )
+    try:
+        reply_text = analyze_portfolio(text)
+    except Exception as e:
+        ctx.logger.exception("Error in analyze_portfolio")
+        reply_text = f"⚠️ Something went wrong: {e}"
 
-    await ctx.send(sender, reply)
+    await ctx.send(sender, create_text_chat(reply_text, end_session=True))
+
+
+@chat_protocol.on_message(ChatAcknowledgement)
+async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement):
+    pass
 
 
 # =========================================================
-#  Run
+#  Include and Run Agent
 # =========================================================
+agent.include(chat_protocol, publish_manifest=True)
+
 if __name__ == "__main__":
-    agent.add_protocol(chat_protocol)
     agent.run()
